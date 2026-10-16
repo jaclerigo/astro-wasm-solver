@@ -1,0 +1,205 @@
+/**
+ * Plugin Name: Astro WASM Plate Solver
+ * File: css/frontend-overlay.css
+ * Description: Estilos para o leitor interativo de astrofotografias (Pan, Zoom, Overlays e Controls)
+ */
+
+/* ==========================================================================
+   1. Container Principal do Leitor Interativo
+   ========================================================================== */
+.astro-viewer-container {
+    position: relative;
+    width: 100%;
+    max-width: 100%;
+    margin: 20px 0;
+    overflow: hidden;
+    border-radius: 8px;
+    background-color: #050508;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    cursor: grab;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none; /* Essencial para pinch-to-zoom fluido em dispositivos móveis */
+    box-sizing: border-box;
+}
+
+.astro-viewer-container:active {
+    cursor: grabbing;
+}
+
+/* ==========================================================================
+   2. Alvo do Panzoom (Imagem Base + Camada SVG)
+   ========================================================================== */
+.astro-panzoom-target {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    transform-origin: 0 0; /* Ponto de origem fixo para cálculos corretos de escala */
+    will-change: transform; /* Ativa aceleração por GPU */
+}
+
+/* Imagem Astrofotográfica Base */
+.astro-base-img {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-width: 100%;
+    pointer-events: none; /* Impede o arrasto nativo do browser na imagem */
+    user-select: none;
+}
+
+/* Camada SVG Sobreposta */
+.astro-overlay-svg {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    transition: opacity 0.3s ease-in-out;
+    pointer-events: none; /* Permite que os cliques no SVG passem para o container */
+}
+
+/* Visibilidade do SVG ativada via classe no Container */
+.astro-viewer-container.show-annotations .astro-overlay-svg {
+    opacity: 1;
+}
+
+/* ==========================================================================
+   3. Elementos do SVG (Marcadores, Objetos e Rótulos)
+   ========================================================================== */
+
+/* Marcadores Círculo / Alvo (DSO, Estrelas, etc.) */
+.astro-target-marker {
+    fill: none;
+    stroke: #00f0ff;
+    stroke-width: 1.5px;
+    vector-effect: non-scaling-stroke; /* Mantém a espessura do traço constante no zoom */
+    cursor: pointer;
+    pointer-events: all; /* Ativa eventos do rato no marcador individual */
+    transition: stroke 0.2s ease, fill 0.2s ease;
+}
+
+.astro-target-marker:hover {
+    stroke: #ff0055;
+    fill: rgba(255, 0, 85, 0.2);
+}
+
+/* Texto das Labels / Nome dos Objetos (M16, NGC, etc.) */
+.astro-target-label {
+    fill: #ffffff;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
+    font-size: 12px;
+    font-weight: 600;
+    text-anchor: start;
+    dominant-baseline: central;
+    text-shadow: 0 0 4px rgba(0, 0, 0, 0.9), 0 0 2px rgba(0, 0, 0, 0.9);
+    pointer-events: none;
+    transition: font-size 0.05s linear;
+}
+
+/* Linhas de Conexão ou Constelações */
+.astro-constellation-line {
+    stroke: rgba(255, 255, 255, 0.35);
+    stroke-width: 1px;
+    stroke-dasharray: 3, 3;
+    vector-effect: non-scaling-stroke;
+}
+
+/* ==========================================================================
+   4. Tooltip Informativo Flutuante
+   ========================================================================== */
+.astro-tooltip {
+    position: absolute;
+    padding: 6px 12px;
+    background: rgba(10, 12, 20, 0.92);
+    color: #ffffff;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 12px;
+    line-height: 1.4;
+    border: 1px solid rgba(0, 240, 255, 0.4);
+    border-radius: 4px;
+    pointer-events: none;
+    opacity: 0;
+    transform: translate(-50%, -120%);
+    transition: opacity 0.15s ease-in-out;
+    z-index: 30;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(4px);
+    white-space: nowrap;
+}
+
+.astro-tooltip.active {
+    opacity: 1;
+}
+
+.astro-tooltip strong {
+    color: #00f0ff;
+}
+
+/* ==========================================================================
+   5. Barra de Controlos Flutuante (Zoom / Pan / Toggle)
+   ========================================================================== */
+.astro-controls-bar {
+    position: absolute;
+    bottom: 15px;
+    right: 15px;
+    display: flex;
+    gap: 6px;
+    background: rgba(10, 12, 20, 0.85);
+    padding: 6px;
+    border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    z-index: 20;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+
+.astro-btn {
+    background: rgba(255, 255, 255, 0.1);
+    color: #ffffff;
+    border: none;
+    width: 32px;
+    height: 32px;
+    border-radius: 4px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s ease, transform 0.1s ease;
+    outline: none;
+}
+
+.astro-btn:hover {
+    background: rgba(0, 240, 255, 0.3);
+    color: #ffffff;
+}
+
+.astro-btn:active {
+    transform: scale(0.95);
+}
+
+/* Estado Ativo do Botão de Visibilidade */
+.astro-viewer-container.show-annotations .btn-toggle-labels {
+    background: rgba(0, 240, 255, 0.4);
+    box-shadow: 0 0 8px rgba(0, 240, 255, 0.5);
+}
+
+/* Ajustes para ecrãs pequenos / mobile */
+@media (max-width: 600px) {
+    .astro-controls-bar {
+        bottom: 10px;
+        right: 10px;
+        padding: 4px;
+        gap: 4px;
+    }
+    
+    .astro-btn {
+        width: 28px;
+        height: 28px;
+        font-size: 13px;
+    }
+}
