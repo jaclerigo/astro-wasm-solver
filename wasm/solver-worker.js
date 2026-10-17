@@ -1,98 +1,218 @@
 /**
  * Plugin Name: Astro WASM Plate Solver
  * File: wasm/solver-worker.js
- * Description: Web Worker para processamento assíncrono de Plate Solving via WASM.
+ * Description: Web Worker para processamento assíncrono de plate solving via Zodiacal/WASM.
  */
 
-// Importa a biblioteca de integração JS gerada pelo Emscripten
-importScripts('solver-engine.js');
+importScripts(new URL('zodiacal/solver.js', self.location.href).href);
 
-let wasmInstance = null;
+let wasmReady;
+let indexReady;
+let initializedIndexUrl;
+let objectCatalogReady;
+let objectCatalog;
+let initializedObjectCatalogUrl;
+let workerQueue = Promise.resolve();
 
-/**
- * Carrega e inicializa os catálogos FITS em memória virtual do Emscripten (MEMFS)
- */
-async function loadCatalogsIntoMEMFS(catalogUrls) {
-    if (!wasmInstance) {
-        // Inicializa o módulo WASM (Module é uma Promise global do solver-engine.js)
-        wasmInstance = await Module();
+async function initializeWasm() {
+    if (!wasmReady) {
+        const wasmUrl = new URL('zodiacal/solver_bg.wasm', self.location.href);
+        wasmReady = wasm_bindgen({ module_or_path: wasmUrl });
     }
 
-    // Cria a diretoria virtual no sistema de ficheiros em memória RAM
     try {
-        wasmInstance.FS.mkdir('/catalogs');
-    } catch (e) {
-        // Ignora se a pasta já existir na sessão
-    }
-
-    // Descarrega cada ficheiro de catálogo e escreve no MEMFS
-    for (const url of catalogUrls) {
-        const fileName = url.split('/').pop();
-        const response = await fetch(url);
-        
-        if (!response.ok) {
-            throw new Error(`Falha ao descarregar o catálogo: ${fileName}`);
-        }
-
-        const arrayBuffer = await response.arrayBuffer();
-        const data = new Uint8Array(arrayBuffer);
-
-        // Guarda o ficheiro no sistema de ficheiros virtual do WASM
-        wasmInstance.FS.writeFile(`/catalogs/${fileName}`, data);
+        await wasmReady;
+    } catch (error) {
+        wasmReady = null;
+        throw error;
     }
 }
 
-/**
- * Escuta as mensagens enviadas do painel de administração (admin-solver.js)
- */
-self.onmessage = async function(e) {
-    const { action, imageData, width, height, catalogUrls } = e.data;
+async function initializeIndex(indexUrl, sendProgress) {
+    if (initializedIndexUrl === indexUrl) {
+        return;
+    }
 
-    if (action === 'SOLVE_IMAGE') {
-        try {
-            self.postMessage({ status: 'PROGRESS', message: 'A carregar catálogos em memória RAM...' });
-            await loadCatalogsIntoMEMFS(catalogUrls);
+    if (indexReady) {
+        throw new Error('O índice estelar já foi carregado com outro URL.');
+    }
 
-            self.postMessage({ status: 'PROGRESS', message: 'A detetar estrelas e a calcular o WCS...' });
+    indexReady = (async () => {
+        sendProgress('A descarregar o índice estelar...');
+        const response = await fetch(indexUrl);
+        if (!response.ok) {
+            throw new Error(`Falha ao descarregar o índice estelar (${response.status}).`);
+        }
 
-            const uint8Pixels = new Uint8Array(imageData);
-            const numBytes = uint8Pixels.length;
+        const buffer = await response.arrayBuffer();
+        if (buffer.byteLength < 48) {
+            throw new Error('O ficheiro do índice estelar está incompleto.');
+        }
 
-            // Aloca memória diretamente no Heap do WebAssembly
-            const dataPtr = wasmInstance._malloc(numBytes);
-            wasmInstance.HEAPU8.set(uint8Pixels, dataPtr);
+        sendProgress('A carregar o índice estelar...');
+        wasm_bindgen.initialize_index(new Uint8Array(buffer));
+        initializedIndexUrl = indexUrl;
+    })();
 
-            // Chama a função nativa em C/C++ exportada no binário .wasm
-            // Int solve_field_wasm(uint8_t* pixels, int width, int height)
-            const success = wasmInstance._solve_field_wasm(dataPtr, width, height);
+    try {
+        await indexReady;
+    } catch (error) {
+        indexReady = null;
+        throw error;
+    }
+}
 
-            if (success === 1) {
-                // Lê a estrutura de resultados do ponteiro WCS
-                const ra_str   = wasmInstance.UTF8ToString(wasmInstance._get_solved_ra());
-                const dec_str  = wasmInstance.UTF8ToString(wasmInstance._get_solved_dec());
-                const scale    = wasmInstance._get_solved_scale();
-                const rotation = wasmInstance._get_solved_rotation();
-                const objects  = wasmInstance.UTF8ToString(wasmInstance._get_solved_objects_json());
+async function loadObjectCatalog(objectCatalogUrl, sendProgress) {
+    if (initializedObjectCatalogUrl === objectCatalogUrl) {
+        return objectCatalog;
+    }
+    if (objectCatalogReady && initializedObjectCatalogUrl !== objectCatalogUrl) {
+        throw new Error('O catálogo de objetos já foi carregado com outro URL.');
+    }
 
-                self.postMessage({
-                    status: 'SUCCESS',
-                    solution: {
-                        ra_formatted: ra_str,
-                        dec_formatted: dec_str,
-                        pixscale: scale,
-                        orientation: rotation,
-                        matched_catalog_objects: JSON.parse(objects || '[]')
-                    }
-                });
-            } else {
-                self.postMessage({ status: 'ERROR', message: 'Não foi possível encontrar uma correspondência para os padrões de estrelas.' });
+    if (!objectCatalogReady) {
+        objectCatalogReady = (async () => {
+            sendProgress('A carregar o catálogo Messier/NGC...');
+            const response = await fetch(objectCatalogUrl);
+            if (!response.ok) {
+                throw new Error(`Falha ao descarregar o catálogo Messier/NGC (${response.status}).`);
             }
 
-            // Liberta a memória alocada no C
-            wasmInstance._free(dataPtr);
+            const records = await response.json();
+            if (!Array.isArray(records)) {
+                throw new Error('O catálogo Messier/NGC tem um formato inválido.');
+            }
 
-        } catch (err) {
-            self.postMessage({ status: 'ERROR', message: err.message });
-        }
+            objectCatalog = records;
+            initializedObjectCatalogUrl = objectCatalogUrl;
+        })();
     }
+
+    try {
+        await objectCatalogReady;
+        return objectCatalog;
+    } catch (error) {
+        objectCatalogReady = null;
+        objectCatalog = null;
+        initializedObjectCatalogUrl = null;
+        throw error;
+    }
+}
+
+function projectObjects(wcs, records, width, height) {
+    const [ra0, dec0] = wcs.crval;
+    const [crpixX, crpixY] = wcs.crpix;
+    const [[cd11, cd12], [cd21, cd22]] = wcs.cd;
+    const determinant = cd11 * cd22 - cd12 * cd21;
+    if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-20) {
+        throw new Error('O WCS devolvido pelo solver é inválido.');
+    }
+
+    const sinDec0 = Math.sin(dec0);
+    const cosDec0 = Math.cos(dec0);
+
+    return records.flatMap(record => {
+        const ra = Number(record.ra_deg) * Math.PI / 180;
+        const dec = Number(record.dec_deg) * Math.PI / 180;
+        if (!Number.isFinite(ra) || !Number.isFinite(dec)) {
+            return [];
+        }
+
+        const deltaRa = Math.atan2(Math.sin(ra - ra0), Math.cos(ra - ra0));
+        const sinDec = Math.sin(dec);
+        const cosDec = Math.cos(dec);
+        const cosDistance = sinDec0 * sinDec + cosDec0 * cosDec * Math.cos(deltaRa);
+        if (cosDistance <= 0) {
+            return [];
+        }
+
+        const xi = cosDec * Math.sin(deltaRa) / cosDistance;
+        const eta = (cosDec0 * sinDec - sinDec0 * cosDec * Math.cos(deltaRa)) / cosDistance;
+        const x = crpixX + (cd22 * xi - cd12 * eta) / determinant;
+        const y = crpixY + (-cd21 * xi + cd11 * eta) / determinant;
+        if (x < 0 || x >= width || y < 0 || y >= height) {
+            return [];
+        }
+
+        const name = typeof record.name === 'string' ? record.name.trim() : '';
+        if (!name) {
+            return [];
+        }
+
+        return [{
+            name,
+            type: typeof record.type === 'string' ? record.type : '',
+            x,
+            y,
+            radius: 8
+        }];
+    });
+}
+
+async function solveImage(data) {
+    const {
+        requestId,
+        imageData,
+        width,
+        height,
+        indexUrl,
+        objectCatalogUrl
+    } = data;
+    const sendProgress = message => self.postMessage({ requestId, status: 'PROGRESS', message });
+
+    try {
+        if (!(imageData instanceof ArrayBuffer) || !Number.isInteger(width) || !Number.isInteger(height)) {
+            throw new Error('Os dados da imagem ou as dimensões são inválidos.');
+        }
+        if (typeof indexUrl !== 'string' || indexUrl.length === 0) {
+            throw new Error('O URL do índice estelar não está configurado.');
+        }
+        if (typeof objectCatalogUrl !== 'string' || objectCatalogUrl.length === 0) {
+            throw new Error('O URL do catálogo Messier/NGC não está configurado.');
+        }
+
+        sendProgress('A carregar o solver WebAssembly...');
+        await initializeWasm();
+        await initializeIndex(indexUrl, sendProgress);
+        const objects = await loadObjectCatalog(objectCatalogUrl, sendProgress);
+
+        sendProgress('A detetar estrelas e a calcular o WCS...');
+        const result = JSON.parse(
+            wasm_bindgen.solve_rgba(new Uint8Array(imageData), width, height)
+        );
+        const matchedObjects = projectObjects(result.wcs, objects, width, height);
+        self.postMessage({
+            requestId,
+            status: 'SUCCESS',
+            solution: {
+                ra_formatted: result.ra_deg.toFixed(6),
+                dec_formatted: result.dec_deg.toFixed(6),
+                pixscale: result.pixel_scale_arcsec,
+                orientation: result.rotation_deg,
+                wcs: result.wcs,
+                matched_catalog_objects: matchedObjects
+            }
+        });
+    } catch (error) {
+        self.postMessage({
+            requestId,
+            status: 'ERROR',
+            message: error instanceof Error ? error.message : String(error)
+        });
+    }
+}
+
+self.onmessage = function(event) {
+    const data = event.data || {};
+    if (data.action !== 'SOLVE_IMAGE') {
+        return;
+    }
+
+    workerQueue = workerQueue.then(() => solveImage(data)).catch(error => {
+        self.postMessage({
+            requestId: data.requestId,
+            status: 'ERROR',
+            message: error instanceof Error ? error.message : String(error)
+        });
+    });
 };

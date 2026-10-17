@@ -9,6 +9,44 @@
 
     // Referência global para o Web Worker do Solver
     let solverWorker = null;
+    let nextWorkerRequestId = 0;
+    const pendingWorkerRequests = new Map();
+
+    function failPendingWorkerRequests(error) {
+        pendingWorkerRequests.forEach(request => request.reject(error));
+        pendingWorkerRequests.clear();
+    }
+
+    function positionPlateSolverButton() {
+        document.querySelectorAll('.aws-run-wasm-solver-btn').forEach(button => {
+            const mediaModal = button.closest('.media-modal');
+            const editImageLink = mediaModal &&
+                mediaModal.querySelector('.attachment-actions .edit-attachment');
+            if (!editImageLink || button.previousElementSibling === editImageLink) {
+                return;
+            }
+
+            editImageLink.insertAdjacentElement('afterend', button);
+            button.classList.add('aws-plate-solving-action');
+        });
+    }
+
+    function observeAttachmentDetails() {
+        positionPlateSolverButton();
+
+        if (!document.body || typeof MutationObserver !== 'function') {
+            return;
+        }
+
+        const observer = new MutationObserver(positionPlateSolverButton);
+        observer.observe(document.body, { childList: true, subtree: true });
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', observeAttachmentDetails, { once: true });
+    } else {
+        observeAttachmentDetails();
+    }
 
     /**
      * Inicializa o Web Worker em segundo plano
@@ -17,6 +55,32 @@
         if (!solverWorker && typeof AWS_Settings !== 'undefined') {
             const workerUrl = AWS_Settings.plugin_url + 'wasm/solver-worker.js';
             solverWorker = new Worker(workerUrl);
+            solverWorker.onmessage = function(event) {
+                const { requestId, status, message, solution } = event.data;
+                const request = pendingWorkerRequests.get(requestId);
+                if (!request) return;
+
+                if (status === 'PROGRESS') {
+                    request.$button.html('⚡ ' + message);
+                } else if (status === 'SUCCESS') {
+                    pendingWorkerRequests.delete(requestId);
+                    request.resolve(solution);
+                } else if (status === 'ERROR') {
+                    pendingWorkerRequests.delete(requestId);
+                    request.reject(new Error(message));
+                }
+            };
+
+            solverWorker.onerror = function(error) {
+                const workerError = new Error('Erro interno no Worker WebAssembly: ' + error.message);
+                failPendingWorkerRequests(workerError);
+                solverWorker.terminate();
+                solverWorker = null;
+            };
+
+            solverWorker.onmessageerror = function() {
+                failPendingWorkerRequests(new Error('Não foi possível interpretar uma resposta do Web Worker.'));
+            };
         }
         return solverWorker;
     }
@@ -73,7 +137,8 @@
                             dec: solution.dec_formatted,
                             scale: solution.pixscale,
                             rotation: solution.orientation,
-                            objects: JSON.stringify(solution.matched_catalog_objects)
+                            objects: JSON.stringify(solution.matched_catalog_objects),
+                            wcs: JSON.stringify(solution.wcs)
                         }
                     });
                 })
@@ -126,32 +191,23 @@
                 return;
             }
 
-            // Escuta as mensagens enviadas pelo worker-solver.js
-            worker.onmessage = function(e) {
-                const { status, message, solution } = e.data;
+            const requestId = ++nextWorkerRequestId;
+            pendingWorkerRequests.set(requestId, { resolve, reject, $button });
 
-                if (status === 'PROGRESS') {
-                    // Atualiza o texto do botão com o progresso do motor
-                    $button.html('⚡ ' + message);
-                } else if (status === 'SUCCESS') {
-                    resolve(solution);
-                } else if (status === 'ERROR') {
-                    reject(new Error(message));
-                }
-            };
-
-            worker.onerror = function(err) {
-                reject(new Error('Erro interno no Worker WebAssembly: ' + err.message));
-            };
-
-            // Transfere o buffer de píxeis para o Worker (zero-copy overhead)
-            worker.postMessage({
-                action: 'SOLVE_IMAGE',
-                imageData: imageData.data.buffer,
-                width: width,
-                height: height,
-                catalogUrls: AWS_Settings.catalogs || []
-            }, [imageData.data.buffer]);
+            try {
+                worker.postMessage({
+                    action: 'SOLVE_IMAGE',
+                    requestId,
+                    imageData: imageData.data.buffer,
+                    width: width,
+                    height: height,
+                    indexUrl: AWS_Settings.index_url,
+                    objectCatalogUrl: AWS_Settings.object_catalog_url
+                }, [imageData.data.buffer]);
+            } catch (error) {
+                pendingWorkerRequests.delete(requestId);
+                reject(error);
+            }
         });
     }
 

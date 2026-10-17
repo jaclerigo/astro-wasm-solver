@@ -1,2 +1,4 @@
 .idea/
 .junie/
+solver-wasm/target/
+__pycache__/
